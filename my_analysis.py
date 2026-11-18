@@ -602,3 +602,74 @@ plt.show()
 
 response_raw = dataset.response
 response_raw.shape 
+# Exercise 13
+response_raw = np.asarray(dataset.response)
+print("Shape:", response_raw.shape)
+print("Overall mean:", response_raw.mean())
+
+# Voxels with the largest fluctuations (likely responsive) and one random voxel
+voxel_sd = response_raw.std(axis=1)
+top_voxels = np.argsort(voxel_sd)[-3:]                     # 3 most variable voxels
+random_voxel = np.random.default_rng(0).integers(len(response_raw))
+voxels = [60686, *top_voxels, random_voxel]
+
+fig, axes = plt.subplots(len(voxels), 1, figsize=(12, 2.2 * len(voxels)), sharex=True, layout="constrained")
+for ax, v in zip(axes, voxels):
+    ax.plot(time_frames, response_raw[v], color=BLUE, linewidth=1.5)
+    ax.axhline(100, color=GRAY, linestyle="--", linewidth=1)
+    ax.set_title(f"Voxel {v}  (SD = {voxel_sd[v]:.2f})", loc="left", fontsize=10)
+    ax.set_ylabel("BOLD")
+axes[-1].set_xlabel("Time frame (0.9 s each)")
+plt.show()
+
+response_no_baseline = response_raw - 100.0
+
+from prfmodel.plotting import plot_response_heatmap
+
+# Uses matplotlib because plotly cannot handle this many voxels
+plot_response_heatmap(
+    response_no_baseline,
+    vmin=-2,
+    vmax=5,
+    xlabel="Time frame (in TR)",
+    ylabel="Voxel index",
+    colorbar_label="BOLD response",
+    figsize=(6, 6),
+);
+
+plt.show()
+
+plot_response_heatmap(response_no_baseline[60000:70000], vmin=-2, vmax=5,
+                      xlabel="Time frame (in TR)", ylabel="Voxel index", colorbar_label="BOLD response", figsize=(6, 6))
+plt.show()
+
+# Exercise 14 (patterns): “Most voxels show noise around 0 without clear structure. Groups of voxels show increased responses (orange/yellow) clustered in time windows that match the periods when the bar was presented (approximately frames 30–145 and 190–310), with lower activity during the start, end and the middle period without stimulation (around frames 150–190). Some voxels show constant extreme values across the whole run, which are likely artefacts.”
+
+# Exercise 15 (why voxels differ): “Voxels differ because only some lie in visual cortex and respond to the bar. Among visual voxels, the timing of responses differs with their pRF location, since the bar reaches different parts of the visual field at different times, and the strength and width differ with pRF size. In addition, non-neural factors such as distance to blood vessels and to the receiver coil, partial grey-matter coverage, noise and artefacts change the amplitude and reliability of each voxel’s signal.”
+
+from plotting_helpers import make_surface_projection
+
+project_to_surface = make_surface_projection(dataset)
+
+from plotting_helpers import make_surface_plot
+
+plot_surf_stat_map_helper = make_surface_plot(dataset.mesh)
+
+# Calculate standard deviation of each timecourse
+response_sd = response_no_baseline.std(axis=1)
+
+plot_surf_stat_map_helper(project_to_surface(response_sd), vmax=1.5, title="BOLD response SD (vmax = 1.5)")
+plt.show()
+
+# Exercise 17: average response on the surface
+
+response_mean = response_no_baseline.mean(axis=1)     # one mean per voxel
+plot_surf_stat_map_helper(project_to_surface(response_mean), vmax=1.0, title="BOLD response mean")
+plt.show()
+
+# bar_on = stimulus.design.reshape(len(time_frames), -1).any(axis=1)     # True when the bar is visible
+# contrast = response_no_baseline[:, bar_on].mean(axis=1) - response_no_baseline[:, ~bar_on].mean(axis=1)
+# plot_surf_stat_map_helper(project_to_surface(contrast), vmax=1.0, title="Bar on minus bar off")
+# plt.show()
+
+# That’s the main lesson of this exercise: high SD can come from stimulus-driven activity or from artefacts, and the SD alone can’t tell them apart.
