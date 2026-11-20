@@ -673,3 +673,290 @@ plt.show()
 # plt.show()
 
 # That’s the main lesson of this exercise: high SD can come from stimulus-driven activity or from artefacts, and the SD alone can’t tell them apart.
+# Selecting valid voxels
+
+response_is_valid = response_no_baseline.std(axis=1) > 0.0
+
+response_valid = response_no_baseline[response_is_valid]
+
+response_is_valid.mean()  # Fraction of valid voxels
+
+# Define repetition time (TR)
+tr = 0.9
+
+# Create custom impulse model
+impulse_model = DerivativeTwoGammaImpulse(resolution=tr)
+
+# Define pRF model with custom impulse response submodel
+prf_model = Gaussian2DPRFModel(
+    impulse_model=impulse_model,
+)
+
+# @title Manual fit? { display-mode: "form" }
+voxel_index = 60686  # A valid voxel with a clear response to the stimulus
+voxel_response = response_valid[voxel_index]
+
+# Show the full range of the observed response, even when the prediction is much larger
+response_margin = 0.1 * np.ptp(voxel_response)
+response_limits = (voxel_response.min() - response_margin, voxel_response.max() + response_margin)
+
+
+def plot_manual_fit(**params: float) -> None:
+    prediction = np.asarray(prf_model(stimulus, to_frame(**params))[0])
+    r_squared = 1.0 - np.sum((voxel_response - prediction) ** 2) / np.sum((voxel_response - voxel_response.mean()) ** 2)
+
+    fig, (ax_field, ax_response) = plt.subplots(
+        1, 2, figsize=(12, 3.8), gridspec_kw={"width_ratios": [1, 3]}, layout="constrained",
+    )
+
+    draw_prf_location(ax_field, params["mu_x"], params["mu_y"], params["sigma"])
+    ax_field.set_title("pRF in the visual field")
+
+    ax_response.plot(time_frames, voxel_response, color=GRAY, linewidth=1, label="Observed")
+    ax_response.plot(time_frames, prediction, color=BLUE, linewidth=2, label="Predicted")
+    ax_response.set_ylim(response_limits)
+    add_legend(ax_response)
+    ax_response.set_title(f"Voxel {voxel_index}: R-squared = {r_squared:.2f}", loc="left")
+    style_axes(ax_response, "Time frame", "BOLD response")
+
+    plt.show()
+
+
+show_interactive(
+    plot_manual_fit,
+    make_sliders(
+        "mu_x",
+        "mu_y",
+        "sigma",
+        "weight_deriv",
+        "baseline",
+        "amplitude",
+        baseline=(0.0, -2.0, 2.0, 0.05),
+        amplitude=(0.05, 0.0, 0.5, 0.01),
+    ),
+)
+
+
+from matplotlib.widgets import Slider
+
+# Slider ranges: practical defaults, with the narrower baseline/amplitude ranges for real data
+ranges = dict(PARAM_SLIDERS)
+ranges["baseline"] = (0.0, -2.0, 2.0, 0.05)
+ranges["amplitude"] = (0.05, 0.0, 0.5, 0.01)
+names = ["mu_x", "mu_y", "sigma", "weight_deriv", "baseline", "amplitude"]
+
+fig = plt.figure(figsize=(13, 7.5))
+ax_field = fig.add_axes([0.05, 0.42, 0.25, 0.50])
+ax_resp = fig.add_axes([0.37, 0.42, 0.60, 0.50])
+
+sliders = {}
+for i, name in enumerate(names):
+    start, lo, hi, step = ranges[name]
+    ax_s = fig.add_axes([0.15, 0.30 - i * 0.045, 0.70, 0.03])
+    sliders[name] = Slider(ax_s, name, lo, hi, valinit=start, valstep=step)
+
+
+def update(_=None):
+    params = {n: s.val for n, s in sliders.items()}
+    prediction = np.asarray(prf_model(stimulus, to_frame(**params))[0])
+    r2 = 1 - np.sum((voxel_response - prediction) ** 2) / np.sum((voxel_response - voxel_response.mean()) ** 2)
+
+    ax_field.clear()
+    draw_prf_location(ax_field, params["mu_x"], params["mu_y"], params["sigma"])
+    ax_field.set_title("pRF in the visual field")
+
+    ax_resp.clear()
+    ax_resp.plot(time_frames, voxel_response, color=GRAY, linewidth=1, label="Observed")
+    ax_resp.plot(time_frames, prediction, color=BLUE, linewidth=2, label="Predicted")
+    ax_resp.set_ylim(response_limits)
+    ax_resp.set_title(f"Voxel {voxel_index}: R-squared = {r2:.2f}", loc="left")
+    ax_resp.set_xlabel("Time frame")
+    ax_resp.legend(loc="upper right")
+    fig.canvas.draw_idle()
+
+
+for s in sliders.values():
+    s.on_changed(update)
+
+update()
+plt.show()
+
+# Exercise 18:
+# the timing and shape parameters (mu_x, mu_y, sigma, weight_deriv) affect the prediction non-linearly and interact with each other, so the “error landscape” has many valleys and trade-offs. The scaling parameters affect it linearly and independently. That’s why automatic fitting starts with a grid search for the non-linear parameters, then solves the linear ones with least squares, and finally refines everything with gradient descent.
+# Grid search
+from prfmodel.fitters import grid_values_2d_prf
+
+grid_param_ranges = grid_values_2d_prf(
+    stimulus,
+    num_mu=21,
+    mu_extent=2.0,  # Span twice the visual field covered by the stimulus
+    num_sigma=10,
+    sigma_range=(0.05, 4.0),  # Log-spaced by default
+) | {  # Add constant parameters
+    "weight_deriv": [-0.5],
+    "baseline": [0.0],
+    "amplitude": [1.0],
+}
+
+grid_param_ranges
+
+from prfmodel.fitters import GridFitter
+
+# Create grid fitter object
+grid_fitter = GridFitter(
+    model=prf_model,
+    stimulus=stimulus,
+    compile_step=True,  # Setting 'compile_step=True' speeds up the fitting
+)
+
+# Run grid search
+grid_history, grid_params = grid_fitter.fit(
+    data=response_valid,
+    parameter_values=grid_param_ranges,
+    batch_size=20,
+)
+
+print("Grid search finished. Best parameters for each voxel:")
+print(grid_params.head())        # best grid values per voxel (one row per voxel)
+
+from prfmodel.plotting import plot_2d_prf_centers, plot_grid_parameter_distribution
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), layout="constrained")
+
+# Count estimates for each combination of pRF center coordinates in the grid
+plot_2d_prf_centers(grid_params, grid_param_ranges, stimulus=stimulus, ax=axes[0])
+axes[0].set(xlabel="mu_x (in degrees)", ylabel="mu_y (in degrees)", title="pRF centers")
+
+# Count estimates for each pRF size in the grid
+plot_grid_parameter_distribution(grid_params, grid_param_ranges, "sigma", ax=axes[1])  # Detects log spacing
+axes[1].set(xlabel="sigma (in degrees)", title="pRF sizes");
+plt.show()
+
+# Exercise 19: “The grid search is a coarse search over a limited number of parameter combinations. It can only find the best combination among those tested, so it may miss the true optimum if it lies between grid points. The grid search is also limited to the ranges and resolutions specified, so it may not explore the full parameter space. Finally, it does not refine the estimates based on the data, so it may not capture the nuances of each voxel’s response.”
+from prfmodel.fitters import GridFitter, grid_values_2d_prf
+from prfmodel.plotting import plot_2d_prf_centers, plot_grid_parameter_distribution
+
+# ------------------------------------------------------------------
+# Settings
+# ------------------------------------------------------------------
+USE_SUBSET = True            # True = fast (5,000 random voxels), False = all voxels (slow on CPU)
+SUBSET_SIZE = 5000
+
+if USE_SUBSET:
+    rng = np.random.default_rng(0)
+    voxel_idx = rng.choice(len(response_valid), size=SUBSET_SIZE, replace=False)
+    data = response_valid[voxel_idx]
+else:
+    data = response_valid
+
+# Screen extent (to check whether centres fall inside the stimulus area)
+x_max = np.abs(x_coords).max()   # about 3.94
+y_max = np.abs(y_coords).max()   # about 2.81
+
+
+# ------------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------------
+def zscore_rows(a):
+    a = a - a.mean(axis=1, keepdims=True)
+    sd = a.std(axis=1, keepdims=True)
+    sd[sd == 0] = 1
+    return a / sd
+
+
+def mean_loss(params, data, chunk=2000):
+    """Mean negative correlation between prediction and data (lower = better)."""
+    corrs = []
+    for i in range(0, len(params), chunk):
+        p = params.iloc[i:i + chunk].reset_index(drop=True)
+        pred = np.asarray(prf_model(stimulus, p))
+        corrs.append((zscore_rows(pred) * zscore_rows(data[i:i + chunk])).mean(axis=1))
+    return -float(np.concatenate(corrs).mean())
+
+
+def run_grid(label, weight_deriv=(-0.5,), **grid_kwargs):
+    ranges = grid_values_2d_prf(stimulus, **grid_kwargs) | {
+        "weight_deriv": list(weight_deriv),
+        "baseline": [0.0],
+        "amplitude": [1.0],
+    }
+    n_comb = np.prod([len(v) for v in ranges.values()])
+    print(f"\n=== {label}: {n_comb} parameter combinations ===")
+
+    fitter = GridFitter(model=prf_model, stimulus=stimulus, compile_step=True)
+    _, params = fitter.fit(data=data, parameter_values=ranges, batch_size=20)
+
+    sig = ranges["sigma"]
+    summary = {
+        "grid": label,
+        "combinations": int(n_comb),
+        "mean loss": round(mean_loss(params, data), 4),
+        "% centres outside stimulus": round(100 * ((params["mu_x"].abs() > x_max) | (params["mu_y"].abs() > y_max)).mean(), 1),
+        "% sigma at min": round(100 * np.isclose(params["sigma"], np.min(sig)).mean(), 1),
+        "% sigma at max": round(100 * np.isclose(params["sigma"], np.max(sig)).mean(), 1),
+    }
+    return ranges, params, summary
+
+
+def plot_distributions(ranges, params, title):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5), layout="constrained")
+    plot_2d_prf_centers(params, ranges, stimulus=stimulus, ax=axes[0])
+    axes[0].set(xlabel="mu_x (in degrees)", ylabel="mu_y (in degrees)", title="pRF centers")
+    plot_grid_parameter_distribution(params, ranges, "sigma", ax=axes[1])
+    axes[1].set(xlabel="sigma (in degrees)", title="pRF sizes")
+    fig.suptitle(title)
+    plt.show()
+
+
+# ------------------------------------------------------------------
+# Grids to compare
+# ------------------------------------------------------------------
+grids = {
+    "1. original":                dict(num_mu=21, mu_extent=2.0, num_sigma=10, sigma_range=(0.05, 4.0)),
+    "2. wider sigma (0.05-10)":   dict(num_mu=21, mu_extent=2.0, num_sigma=12, sigma_range=(0.05, 10.0)),
+    "3. denser mu (41 values)":   dict(num_mu=41, mu_extent=2.0, num_sigma=10, sigma_range=(0.05, 4.0)),
+    "4. smaller extent (1.2)":    dict(num_mu=13, mu_extent=1.2, num_sigma=10, sigma_range=(0.05, 4.0)),
+    "5. weight_deriv range":      dict(num_mu=21, mu_extent=2.0, num_sigma=10, sigma_range=(0.05, 4.0),
+                                       weight_deriv=(-1.0, -0.5, 0.0, 0.5)),
+    "6. combined":                dict(num_mu=41, mu_extent=2.0, num_sigma=12, sigma_range=(0.05, 10.0),
+                                       weight_deriv=(-1.0, -0.5, 0.0, 0.5)),
+}
+
+results = {}
+summaries = []
+for label, kwargs in grids.items():
+    ranges, params, summary = run_grid(label, **kwargs)
+    results[label] = (ranges, params)
+    summaries.append(summary)
+
+# ------------------------------------------------------------------
+# Comparison table and plots
+# ------------------------------------------------------------------
+summary_table = pd.DataFrame(summaries).set_index("grid")
+print("\n", summary_table.to_string())
+
+for label, (ranges, params) in results.items():
+    plot_distributions(ranges, params, label)
+
+
+# Least square
+from prfmodel.fitters import LeastSquaresFitter
+
+# Create least-squares fitter
+ls_fitter = LeastSquaresFitter(
+    model=prf_model,
+    stimulus=stimulus,
+)
+
+# Run least squares fit
+ls_history, ls_params = ls_fitter.fit(
+    data=response_valid,
+    parameters=grid_params,
+    slope_name="amplitude",  # Names of parameters to be optimized with least squares
+    intercept_name="baseline",
+    batch_size=200,
+)
+print("Least-squares fit finished. Best parameters for each voxel:")
+print(ls_params)        # best least-squares values per voxel (one row per voxel
+
+# SGD 
