@@ -571,6 +571,39 @@ grid_param_ranges = {
     "amplitude": [1.0],
 }
 
+from prfmodel.fitters import GridFitter
+
+# Create grid fitter object
+grid_fitter = GridFitter(
+    model=cf_model,
+    stimulus=stimulus,
+    compile_step=True,  # Setting 'compile_step=True' speeds up the fitting
+)
+
+# Run grid search
+grid_history, grid_params = grid_fitter.fit(
+    data=response_valid,
+    parameter_values=grid_param_ranges,
+    batch_size=20,
+)
+
+# @title Figure: Distribution of the grid search estimates { display-mode: "form" }
+from prfmodel.plotting import plot_grid_parameter_distribution
+
+fig, (ax_map, ax_sigma) = plt.subplots(
+    1, 2, figsize=(12, 4.5), gridspec_kw={"width_ratios": [1, 1.3]}, layout="constrained",
+)
+
+# Number of vertices with their CF center at each V1 vertex; a log scale also shows V1 vertices with few counts
+center_counts = np.bincount(grid_params["center_index"].astype(int), minlength=len(distance_matrix))
+points = draw_v1_map(ax_map, c=center_counts, cmap=TUNING_CMAP, norm=mpl.colors.SymLogNorm(linthresh=1.0, vmin=0.0))
+fig.colorbar(points, ax=ax_map, label="Number of vertices")
+ax_map.set_title("CF centers", loc="left")
+
+plot_grid_parameter_distribution(grid_params, grid_param_ranges, "sigma", ax=ax_sigma)  # Detects log spacing
+ax_sigma.set(xlabel="sigma (in mm)", title="CF sizes")
+
+plt.show()
 
 def fit_cf(stim, data, grid_ranges):
     """Grid search for center_index and sigma, then least squares for baseline and amplitude."""
