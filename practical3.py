@@ -2455,3 +2455,31 @@ for name, sig_inner, sig_outer, amp_outer in [
 # σ_center / σ_activation	how big its "window" is (drives the response up)
 # σ_surround	how big the annoying neighbourhood is (pushes the response down)
 # σ_normalization	how big the comparison crowd is (divides the response)
+
+# Method: how to compare models fairly
+# Use a noise ceiling to know what's achievable. You measure how reliable each voxel is (the correlation between repeated sweeps) and keep only reliable voxels. The noise ceiling then tells you how good a model could be, so you can judge model performance relative to it rather than to 1. It's only an estimate, and here a conservative one: some voxels scored above it.
+# Never judge models on in-sample fit. More parameters always fit the training data better (DN > DoG > CSS > Gaussian). Only cross-validation shows which extra assumptions generalize.
+# Make the comparison fair: same voxels, same data, same HRF, same SGD settings. Initialize complex models from simpler ones to avoid local minima.
+# Prefer simpler models unless the gain is clear. Per-voxel selection with a minimum gain avoids picking complex models because of noise. The result depends strongly on that threshold, so check several values.
+# Separate the jobs: split data to compare and select, then fit on all data to interpret parameters.
+# Science: what this data showed
+# Compression is the main thing the Gaussian misses. n < 1 in about 96% of voxels, CSS improves about 84% of voxels on test data, and its advantage doesn't shrink out of sample.
+# DN is best on average, but only just. Its lead over CSS is tiny and mostly disappears with a minimum gain of 0.01. In your fits, its normalization pool behaved like compression.
+# Suppression is barely detectable here. About half the voxels have no surround, DoG helps only about half of them, and surround parameters often stayed at their starting values.
+# For most voxels, the Gaussian is good enough when you require a real improvement (77% at min_gain 0.05), especially for central, small pRFs.
+# All models reach about 80% of the noise ceiling. The remaining gap is larger than the differences between models, and comes from things none of them capture (HRF timing, non-retinotopic responses).
+# Biggest lesson: the stimulus limits what you can learn
+# The models can only be judged where the stimulus samples the pRF.
+# 43% of the pRF centres lie outside the screen. The complex models' largest gains occur there, exactly where estimates are least trustworthy.
+# The surround is mostly outside the screen, so suppression can't be measured properly.
+# Absence of evidence here isn't evidence of absence: testing suppression needs a larger or different stimulus.
+# Parameters that pile up at their starting values weren't determined by the data, so don't interpret them. Also, parameters with the same name mean different things in different models: CSS σ isn't Gaussian σ.
+# For your thesis
+
+# The same recipe applies to comparing Gaussian vs sigmoid tuning in RTMs:
+
+# fit on training images and evaluate on test images;
+# relate the gains to a noise ceiling;
+# prefer the simpler model unless the gain is clear;
+# refit on all data for interpretation;
+# check whether your stimulus set actually samples the part of the representational space where the models differ.
